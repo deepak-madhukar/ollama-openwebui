@@ -173,22 +173,464 @@ deploy:
 
 ## 🚀 Run the Workspace
 
-### CPU
+### Docker Compose (Local Development)
 
-```
+#### CPU
+
+```bash
 docker-compose up -d
 ```
 
-### GPU (CUDA)
+#### GPU (CUDA)
 
 1. Uncomment the GPU configuration in `docker-compose.yml` (see Docker Compose Configuration section above)
 2. Run:
 
-```
+```bash
 docker-compose up -d
 ```
 
 > **Note:** GPU support requires NVIDIA Container Toolkit installed on your host machine.
+
+### OpenShift (Production Deployment)
+
+Deploy to OpenShift/Kubernetes for production workloads with high availability and enterprise features.
+
+#### Prerequisites
+
+- OpenShift cluster access with admin privileges
+- `oc` CLI tool installed and configured
+- Sufficient cluster resources:
+  - **CPU**: 5+ cores available
+  - **Memory**: 10+ GB RAM available  
+  - **Storage**: 60+ GB persistent storage
+- (Optional) **NVIDIA GPU Operator** for GPU acceleration
+
+#### GPU Support Setup
+
+For GPU acceleration on OpenShift, install the NVIDIA GPU Operator:
+
+```bash
+# Install NVIDIA GPU Operator via OpenShift Console or CLI
+oc apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nvidia-gpu-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: nvidia-gpu-operator-group
+  namespace: nvidia-gpu-operator
+spec:
+  targetNamespaces:
+  - nvidia-gpu-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: gpu-operator-certified
+  namespace: nvidia-gpu-operator
+spec:
+  channel: "stable"
+  name: gpu-operator-certified
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+EOF
+
+# Wait for operator to be ready
+oc get csv -n nvidia-gpu-operator
+
+# Enable GPU support in Ollama deployment
+# Edit openshift.yaml and uncomment the GPU resources section
+```
+
+#### Step-by-Step Deployment
+
+**1. Deploy Resources**
+```bash
+# Apply all OpenShift manifests
+oc apply -f openshift.yaml
+
+# Verify namespace creation
+oc get namespace ollama-openwebui
+```
+
+**2. Monitor Deployment Progress**
+```bash
+# Watch pods starting up
+oc get pods -n ollama-openwebui -w
+
+# Check deployment status
+oc get deployments -n ollama-openwebui
+
+# View deployment rollout status
+oc rollout status deployment/ollama -n ollama-openwebui
+oc rollout status deployment/open-webui -n ollama-openwebui
+```
+
+**3. Verify Services and Connectivity**
+```bash
+# Check services
+oc get svc -n ollama-openwebui
+
+# Test Ollama API connectivity
+oc exec -it deployment/open-webui -n ollama-openwebui -- curl -s http://ollama-service:11434/api/tags
+
+# Check persistent volumes
+oc get pvc -n ollama-openwebui
+```
+
+**4. Get Access URL**
+```bash
+# Get the OpenWebUI route URL
+oc get route open-webui-route -n ollama-openwebui
+
+# Or get the full URL
+echo "https://$(oc get route open-webui-route -n ollama-openwebui -o jsonpath='{.spec.host}')"
+```
+
+**5. Pull Your First Model**
+```bash
+# Connect to Ollama pod and pull a lightweight model
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama pull qwen2.5:1.5b
+
+# List available models
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama list
+
+# Test model inference
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama run qwen2.5:1.5b "Hello, how are you?"
+```
+
+#### Configuration Options
+
+**GPU Support**: To enable GPU acceleration:
+
+1. Ensure NVIDIA GPU Operator is installed
+2. Edit `openshift.yaml` and uncomment the GPU resources section:
+   ```yaml
+   resources:
+     limits:
+       nvidia.com/gpu: 1
+   ```
+3. Apply the updated configuration
+
+**Storage Classes**: Update PVCs to use your preferred storage class:
+```yaml
+# In openshift.yaml, update both PVCs
+spec:
+  storageClassName: your-preferred-storage-class
+```
+
+**Resource Limits**: Adjust based on your cluster capacity:
+```yaml
+# Ollama resources (for larger models)
+resources:
+  requests:
+    memory: "4Gi"
+    cpu: "1"
+  limits:
+    memory: "16Gi" 
+    cpu: "8"
+```
+
+#### Deployment Features
+
+- ✅ **Persistent Storage** - Models and data survive pod restarts
+- ✅ **Service Discovery** - Automatic connectivity between components  
+- ✅ **Health Checks** - Readiness and liveness probes
+- ✅ **TLS Termination** - Secure HTTPS access via OpenShift routes
+- ✅ **Resource Limits** - Prevent resource starvation
+- ✅ **Network Policies** - Secure network isolation
+- ✅ **Secrets Management** - Secure configuration storage
+- ✅ **GPU Operator Support** - Hardware acceleration for inference
+
+#### Troubleshooting
+
+**Check Deployment Status:**
+```bash
+# Overall status check
+oc get all -n ollama-openwebui
+
+# Pod details and events
+oc describe pod -l app=ollama -n ollama-openwebui
+oc describe pod -l app=open-webui -n ollama-openwebui
+
+# Check pod resource usage
+oc adm top pods -n ollama-openwebui
+```
+
+**Debug Connectivity Issues:**
+```bash
+# Test Ollama service from within cluster
+oc exec -it deployment/open-webui -n ollama-openwebui -- curl -v http://ollama-service:11434/api/tags
+
+# Check service endpoints
+oc get endpoints -n ollama-openwebui
+
+# Test DNS resolution
+oc exec -it deployment/open-webui -n ollama-openwebui -- nslookup ollama-service
+```
+
+**View Application Logs:**
+```bash
+# Ollama logs (real-time)
+oc logs -f deployment/ollama -n ollama-openwebui
+
+# OpenWebUI logs (real-time)
+oc logs -f deployment/open-webui -n ollama-openwebui
+
+# Previous container logs (if pods crashed)
+oc logs deployment/ollama -n ollama-openwebui --previous
+oc logs deployment/open-webui -n ollama-openwebui --previous
+
+# All logs from last 1 hour
+oc logs deployment/ollama -n ollama-openwebui --since=1h
+```
+
+**Storage and PVC Issues:**
+```bash
+# Check PVC status and events
+oc describe pvc -n ollama-openwebui
+
+# Check storage usage inside pods
+oc exec -it deployment/ollama -n ollama-openwebui -- df -h
+oc exec -it deployment/open-webui -n ollama-openwebui -- df -h
+
+# List files in persistent volumes
+oc exec -it deployment/ollama -n ollama-openwebui -- ls -la /root/.ollama
+oc exec -it deployment/open-webui -n ollama-openwebui -- ls -la /app/backend/data
+```
+
+**GPU Troubleshooting:**
+```bash
+# Check GPU operator installation
+oc get csv -n nvidia-gpu-operator
+
+# Verify GPU nodes and resources
+oc describe nodes | grep -A 10 -B 5 "nvidia.com/gpu"
+
+# Check GPU accessibility in Ollama pod
+oc exec -it deployment/ollama -n ollama-openwebui -- nvidia-smi
+
+# View GPU operator logs
+oc logs -n nvidia-gpu-operator -l app=nvidia-operator-validator
+
+# Check if GPU resources are allocated to pod
+oc describe pod -l app=ollama -n ollama-openwebui | grep -A 5 -B 5 "nvidia.com/gpu"
+```
+
+**Network and Route Issues:**
+```bash
+# Check route configuration
+oc describe route open-webui-route -n ollama-openwebui
+
+# Test external accessibility
+curl -I https://$(oc get route open-webui-route -n ollama-openwebui -o jsonpath='{.spec.host}')
+
+# Check network policies
+oc get networkpolicy -n ollama-openwebui
+oc describe networkpolicy ollama-openwebui-netpol -n ollama-openwebui
+```
+
+**Performance Debugging:**
+```bash
+# Check resource limits and requests
+oc describe deployment ollama -n ollama-openwebui | grep -A 10 "Limits\|Requests"
+
+# Monitor resource usage over time
+watch 'oc adm top pods -n ollama-openwebui'
+
+# Check node resource availability
+oc describe nodes | grep -A 10 "Allocated resources"
+```
+
+#### Model Management on OpenShift
+
+**Pull Models:**
+```bash
+# Pull lightweight models (good for testing)
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama pull qwen2.5:1.5b
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama pull phi3:4b
+
+# Pull larger models (better performance, more resources needed)
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama pull mistral:7b
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama pull llama3:8b
+
+# Pull code-specialized models
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama pull codellama:7b
+```
+
+**List and Manage Models:**
+```bash
+# List all available models
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama list
+
+# Show model details
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama show qwen2.5:1.5b
+
+# Test model directly
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama run qwen2.5:1.5b "Explain quantum computing"
+
+# Check currently loaded models
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama ps
+```
+
+**Delete Models (Free Storage):**
+```bash
+# Remove specific model
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama rm qwen2.5:1.5b
+
+# Remove multiple models
+oc exec -it deployment/ollama -n ollama-openwebui -- ollama rm mistral:7b llama3:8b
+
+# Check storage usage before/after
+oc exec -it deployment/ollama -n ollama-openwebui -- df -h /root/.ollama
+```
+
+**Model Storage Management:**
+```bash
+# Check model storage usage
+oc exec -it deployment/ollama -n ollama-openwebui -- du -sh /root/.ollama/*
+
+# List model files
+oc exec -it deployment/ollama -n ollama-openwebui -- find /root/.ollama -name "*.bin" -exec ls -lh {} \;
+
+# Backup models (copy to local)
+oc cp ollama-openwebui/deployment/ollama:/root/.ollama ./ollama-models-backup
+
+# Restore models (copy from local)
+oc cp ./ollama-models-backup ollama-openwebui/deployment/ollama:/root/.ollama
+```
+
+#### Security Configuration
+
+**Update Secret Key:**
+```bash
+# Generate new secret
+NEW_SECRET=$(openssl rand -base64 32)
+
+# Update secret
+oc patch secret openwebui-secret -n ollama-openwebui \
+  --type='json' \
+  -p='[{"op": "replace", "path": "/data/secret-key", "value":"'$(echo $NEW_SECRET | base64 | tr -d '\n')'"}]'
+
+# Restart OpenWebUI to apply new secret
+oc rollout restart deployment/open-webui -n ollama-openwebui
+```
+
+**Access Control:**
+```bash
+# Check route access
+oc get route open-webui-route -n ollama-openwebui -o yaml
+
+# Add IP whitelist to route (optional)
+oc annotate route open-webui-route -n ollama-openwebui \
+  haproxy.router.openshift.io/ip_whitelist="192.168.1.0/24 10.0.0.0/8"
+
+# Enable rate limiting (optional)
+oc annotate route open-webui-route -n ollama-openwebui \
+  haproxy.router.openshift.io/rate-limit-connections=10
+```
+
+#### Maintenance and Updates
+
+**Update Deployments:**
+```bash
+# Update Ollama to latest image
+oc set image deployment/ollama ollama=ollama/ollama:latest -n ollama-openwebui
+
+# Update OpenWebUI to latest image
+oc set image deployment/open-webui open-webui=ghcr.io/open-webui/open-webui:main -n ollama-openwebui
+
+# Check rollout status
+oc rollout status deployment/ollama -n ollama-openwebui
+oc rollout status deployment/open-webui -n ollama-openwebui
+```
+
+**Scaling Operations:**
+```bash
+# Scale OpenWebUI for high availability (Ollama should stay at 1 replica)
+oc scale deployment/open-webui --replicas=3 -n ollama-openwebui
+
+# Check scaling status
+oc get deployments -n ollama-openwebui
+```
+
+**Backup and Restore:**
+```bash
+# Backup OpenWebUI configuration and data
+oc exec deployment/open-webui -n ollama-openwebui -- \
+  tar -czf /tmp/openwebui-backup.tar.gz -C /app/backend/data .
+
+# Copy backup to local machine
+oc cp ollama-openwebui/deployment/open-webui:/tmp/openwebui-backup.tar.gz ./openwebui-backup.tar.gz
+
+# Backup Ollama models
+oc exec deployment/ollama -n ollama-openwebui -- \
+  tar -czf /tmp/ollama-models.tar.gz -C /root/.ollama .
+
+# Copy models backup
+oc cp ollama-openwebui/deployment/ollama:/tmp/ollama-models.tar.gz ./ollama-models.tar.gz
+
+# Restore data (copy backup back and extract)
+oc cp ./openwebui-backup.tar.gz ollama-openwebui/deployment/open-webui:/tmp/
+oc exec deployment/open-webui -n ollama-openwebui -- \
+  tar -xzf /tmp/openwebui-backup.tar.gz -C /app/backend/data
+```
+
+#### Resource Monitoring
+
+**Monitor Performance:**
+```bash
+# Real-time resource monitoring
+watch 'oc adm top pods -n ollama-openwebui'
+
+# Check resource limits and usage
+oc describe pod -l app=ollama -n ollama-openwebui | grep -A 5 -B 5 "Limits\|Requests"
+
+# View metrics (if Prometheus is available)
+oc get --raw /api/v1/nodes/metrics | grep ollama
+```
+
+**Storage Monitoring:**
+```bash
+# Check PVC usage
+oc exec deployment/ollama -n ollama-openwebui -- df -h /root/.ollama
+oc exec deployment/open-webui -n ollama-openwebui -- df -h /app/backend/data
+
+# Monitor storage growth
+oc exec deployment/ollama -n ollama-openwebui -- \
+  find /root/.ollama -type f -exec ls -lh {} \; | sort -k5 -hr
+```
+
+#### Cleanup and Removal
+
+**Complete Cleanup:**
+```bash
+# Remove all resources and namespace
+oc delete -f openshift.yaml
+
+# Verify cleanup
+oc get all -n ollama-openwebui
+oc get pvc -n ollama-openwebui
+
+# Force remove namespace if stuck
+oc delete namespace ollama-openwebui --force --grace-period=0
+```
+
+**Partial Cleanup:**
+```bash
+# Remove only deployments (keep data)
+oc delete deployment ollama open-webui -n ollama-openwebui
+
+# Remove only services and routes (keep deployments and data)
+oc delete svc,route -n ollama-openwebui --all
+
+# Remove only models but keep application running
+oc exec deployment/ollama -n ollama-openwebui -- ollama rm --all
+```
 
 ---
 

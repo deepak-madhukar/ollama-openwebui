@@ -1,0 +1,281 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ollama-openwebui
+  labels:
+    name: ollama-openwebui
+---
+# Ollama Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: ollama-openwebui
+  labels:
+    app: ollama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+      - name: ollama
+        image: ollama/ollama:latest
+        ports:
+        - containerPort: 11434
+          name: http
+          protocol: TCP
+        env:
+        - name: OLLAMA_HOST
+          value: "0.0.0.0:11434"
+        - name: OLLAMA_ORIGINS
+          value: "*"
+        volumeMounts:
+        - name: ollama-data
+          mountPath: /root/.ollama
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+        readinessProbe:
+          httpGet:
+            path: /api/tags
+            port: 11434
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /api/tags
+            port: 11434
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+
+        # Uncomment for GPU support (requires NVIDIA GPU Operator)
+        # resources:
+        #   requests:
+        #     memory: "4Gi"
+        #     cpu: "1"
+        #   limits:
+        #     memory: "16Gi"
+        #     cpu: "8"
+        #     nvidia.com/gpu: 1
+        # env:
+        # - name: NVIDIA_VISIBLE_DEVICES
+        #   value: "all"
+        # - name: NVIDIA_DRIVER_CAPABILITIES
+        #   value: "compute,utility"
+      volumes:
+      - name: ollama-data
+        persistentVolumeClaim:
+          claimName: ollama-pvc
+      restartPolicy: Always
+---
+# Ollama Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: ollama-openwebui
+  labels:
+    app: ollama
+spec:
+  type: ClusterIP
+  ports:
+  - port: 11434
+    targetPort: 11434
+    protocol: TCP
+    name: http
+  selector:
+    app: ollama
+---
+# Ollama PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-pvc
+  namespace: ollama-openwebui
+  labels:
+    app: ollama
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  # Uncomment and specify if you have a specific storage class
+  # storageClassName: your-storage-class
+---
+# OpenWebUI Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  namespace: ollama-openwebui
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      containers:
+      - name: open-webui
+        image: ghcr.io/open-webui/open-webui:main
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: OLLAMA_BASE_URL
+          value: "http://ollama-service:11434"
+        - name: WEBUI_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openwebui-secret
+              key: secret-key
+        - name: WEBUI_NAME
+          value: "OpenWebUI on OpenShift"
+        volumeMounts:
+        - name: openwebui-data
+          mountPath: /app/backend/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+      volumes:
+      - name: openwebui-data
+        persistentVolumeClaim:
+          claimName: openwebui-pvc
+      restartPolicy: Always
+---
+# OpenWebUI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui-service
+  namespace: ollama-openwebui
+  labels:
+    app: open-webui
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: open-webui
+---
+# OpenWebUI PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openwebui-pvc
+  namespace: ollama-openwebui
+  labels:
+    app: open-webui
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uncomment and specify if you have a specific storage class
+  # storageClassName: your-storage-class
+---
+# OpenWebUI Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openwebui-secret
+  namespace: ollama-openwebui
+  labels:
+    app: open-webui
+type: Opaque
+data:
+  # Base64 encoded secret key - generate with: echo -n "your-secret-key-here" | base64
+  secret-key: b3BlbndlYnVpLXNlY3JldC1rZXktMjAyNQ==
+---
+# OpenWebUI Route (OpenShift-specific for external access)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: open-webui-route
+  namespace: ollama-openwebui
+  labels:
+    app: open-webui
+spec:
+  to:
+    kind: Service
+    name: open-webui-service
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+---
+# NetworkPolicy (Optional - for network security)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-openwebui-netpol
+  namespace: ollama-openwebui
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ollama-openwebui
+    - namespaceSelector:
+        matchLabels:
+          network.openshift.io/policy-group: ingress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: ollama-openwebui
+  - to: [] # Allow external egress for model downloads
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
